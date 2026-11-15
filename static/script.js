@@ -1,73 +1,183 @@
-const form = document.getElementById("travel-form");
-const statusMessage = document.getElementById("status");
-const submitButton = document.getElementById("submit-button");
-const buttonLabel = document.getElementById("button-label");
-const results = document.getElementById("results");
-const startDate = document.getElementById("start-date");
-const endDate = document.getElementById("end-date");
+let currentThreadId = localStorage.getItem("travel_thread_id") || null;
+let latestAnswerMarkdown = "";
 
-startDate.addEventListener("change", () => {
-  endDate.min = startDate.value;
-  if (endDate.value && endDate.value < startDate.value) {
-    endDate.value = "";
-  }
-});
-
-function showResult(cardId, contentId, value) {
-  const card = document.getElementById(cardId);
-  const content = document.getElementById(contentId);
-  content.textContent = value || "";
-  card.hidden = !value;
+function setPrompt(text) {
+    document.getElementById("userInput").value = text;
 }
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  statusMessage.textContent = "";
-  statusMessage.classList.remove("error");
+function setLoading(isLoading) {
+    const sendBtn = document.getElementById("sendBtn");
+    const btnText = document.getElementById("btnText");
+    const btnLoader = document.getElementById("btnLoader");
 
-  if (endDate.value < startDate.value) {
-    statusMessage.textContent = "La fecha de regreso debe ser posterior a la fecha de salida.";
-    statusMessage.classList.add("error");
-    return;
-  }
+    sendBtn.disabled = isLoading;
 
-  const formData = new FormData(form);
-  const message = [
-    `Quiero viajar a ${formData.get("destination")}.`,
-    `Mi presupuesto aproximado es de $${formData.get("budget")} USD.`,
-    `Las fechas del viaje son del ${formData.get("start_date")} al ${formData.get("end_date")}.`,
-    "Sugiere vuelos, hoteles y un itinerario práctico dentro de mi presupuesto."
-  ].join(" ");
+    if (isLoading) {
+        btnText.classList.add("hidden");
+        btnLoader.classList.remove("hidden");
+    } else {
+        btnText.classList.remove("hidden");
+        btnLoader.classList.add("hidden");
+    }
+}
 
-  submitButton.disabled = true;
-  buttonLabel.textContent = "Buscando...";
-  statusMessage.textContent = "Estamos preparando tu propuesta. Esto puede tardar un momento.";
-  results.hidden = true;
+function showError(message) {
+    const errorBox = document.getElementById("errorBox");
 
-  try {
-    const response = await fetch("/api/travel", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message })
-    });
-    const data = await response.json();
+    errorBox.textContent = message;
+    errorBox.classList.remove("hidden");
+}
 
-    if (!response.ok || !data.success) {
-      throw new Error(data.error || "No se pudo completar la búsqueda. Inténtalo de nuevo.");
+function hideError() {
+    const errorBox = document.getElementById("errorBox");
+
+    errorBox.classList.add("hidden");
+    errorBox.textContent = "";
+}
+
+function showResult(answer, threadId) {
+    latestAnswerMarkdown = answer;
+
+    const resultSection = document.getElementById("resultSection");
+    const resultBox = document.getElementById("resultBox");
+    const threadInfo = document.getElementById("threadInfo");
+
+    if (typeof marked !== "undefined") {
+        resultBox.innerHTML = marked.parse(answer);
+    } else {
+        resultBox.innerText = answer;
     }
 
-    showResult("answer-card", "answer", data.answer);
-    showResult("flights-card", "flights", data.flight_results);
-    showResult("hotels-card", "hotels", data.hotel_results);
-    showResult("itinerary-card", "itinerary", data.itinerary);
-    results.hidden = false;
-    statusMessage.textContent = "¡Tu propuesta está lista!";
-    results.scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch (error) {
-    statusMessage.textContent = error.message || "Ocurrió un error al conectar con el servidor.";
-    statusMessage.classList.add("error");
-  } finally {
-    submitButton.disabled = false;
-    buttonLabel.textContent = "Buscar mi viaje";
-  }
+    threadInfo.textContent = `Thread ID: ${threadId}`;
+
+    resultSection.classList.remove("hidden");
+
+    resultSection.scrollIntoView({
+        behavior: "smooth",
+        block: "start"
+    });
+}
+
+async function sendMessage() {
+    hideError();
+
+    const input = document.getElementById("userInput");
+    const message = input.value.trim();
+
+    if (!message) {
+        showError("Please enter your travel request first.");
+        return;
+    }
+
+    setLoading(true);
+
+    try {
+        const response = await fetch("/api/travel", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                message: message,
+                thread_id: currentThreadId
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || "Something went wrong.");
+        }
+
+        currentThreadId = data.thread_id;
+        localStorage.setItem("travel_thread_id", currentThreadId);
+
+        showResult(data.answer, data.thread_id);
+
+    } catch (error) {
+        showError(error.message);
+    } finally {
+        setLoading(false);
+    }
+}
+
+function copyResult() {
+    const resultBox = document.getElementById("resultBox");
+    const text = resultBox.innerText;
+
+    if (!text) {
+        return;
+    }
+
+    navigator.clipboard.writeText(text)
+        .then(() => {
+            const copyBtn = document.querySelector(".copy-btn");
+            const oldText = copyBtn.textContent;
+
+            copyBtn.textContent = "Copied!";
+
+            setTimeout(() => {
+                copyBtn.textContent = oldText;
+            }, 1400);
+        })
+        .catch(() => {
+            showError("Could not copy result.");
+        });
+}
+
+function downloadPDF() {
+    const pdfContent = document.getElementById("pdfContent");
+
+    if (!latestAnswerMarkdown || !pdfContent) {
+        showError("No travel plan available to download.");
+        return;
+    }
+
+    const downloadBtn = document.querySelector(".download-btn");
+    const oldText = downloadBtn.textContent;
+
+    downloadBtn.textContent = "Preparing PDF...";
+    downloadBtn.disabled = true;
+
+    const options = {
+        margin: 0.5,
+        filename: "ai-travel-plan.pdf",
+        image: {
+            type: "jpeg",
+            quality: 0.98
+        },
+        html2canvas: {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: "#ffffff"
+        },
+        jsPDF: {
+            unit: "in",
+            format: "a4",
+            orientation: "portrait"
+        },
+        pagebreak: {
+            mode: ["avoid-all", "css", "legacy"]
+        }
+    };
+
+    html2pdf()
+        .set(options)
+        .from(pdfContent)
+        .save()
+        .then(() => {
+            downloadBtn.textContent = oldText;
+            downloadBtn.disabled = false;
+        })
+        .catch(() => {
+            downloadBtn.textContent = oldText;
+            downloadBtn.disabled = false;
+            showError("Could not download PDF.");
+        });
+}
+
+document.addEventListener("keydown", function(event) {
+    if (event.ctrlKey && event.key === "Enter") {
+        sendMessage();
+    }
 });
