@@ -2,6 +2,8 @@
 
 An AI-powered travel planner with a web interface and a backend built with FastAPI and LangGraph. Enter a destination, budget, and travel dates to get flight and hotel suggestions plus a personalized itinerary.
 
+![Texto alternativo](schema.jpg)
+
 ## Features
 
 - Web form for destination, budget, and travel dates.
