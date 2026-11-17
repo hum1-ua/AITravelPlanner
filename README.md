@@ -2,6 +2,8 @@
 
 An AI-powered travel planner with a web interface and a backend built with FastAPI and LangGraph. Enter a destination, budget, and travel dates to get flight and hotel suggestions plus a personalized itinerary.
 
+![Texto alternativo](frontend.png)
+
 ## Features
 
 - Web form for destination, budget, and travel dates.
@@ -108,6 +110,7 @@ AITravelPlanner/
     ├── flight_tool.py     # AviationStack integration
     └── tavily_tool.py     # Hotel search with Tavily
 ```
+![Texto alternativo](schema.jpg)
 
 ## Troubleshooting
 
