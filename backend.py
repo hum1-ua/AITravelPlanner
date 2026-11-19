@@ -11,6 +11,7 @@ from typing import TypedDict, Annotated
 import operator
 import uuid
 import asyncio
+import json
 import psycopg
 from psycopg.rows import dict_row
 
@@ -72,6 +73,36 @@ class TravelState(TypedDict):
     weather_results: str
 
 
+def _limit_prompt_text(value: object, max_chars: int = 1000) -> str:
+    text = str(value)
+    if len(text) > max_chars:
+        return f"{text[:max_chars]}\n[truncated]"
+    return text
+
+
+def _aviation_tool_error(result) -> str | None:
+    if not isinstance(result, list):
+        return None
+
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+
+        text = item.get("text")
+        if not isinstance(text, str):
+            continue
+
+        try:
+            response_data = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+
+        if isinstance(response_data, dict) and response_data.get("ok") is False:
+            return str(response_data.get("error", "AviationStack request failed."))
+
+    return None
+
+
 # =========================
 # Flight Agent
 # =========================
@@ -122,8 +153,6 @@ Return concise travel guidance.
 
 # Flight Agent
 def flight_agent(state: TravelState):
-    print("\nINSIDE FLIGHT AGENT\n")
-
     query = state["user_query"]
 
     try:
@@ -140,24 +169,38 @@ def flight_agent(state: TravelState):
             )
         )
 
+        #La información de vuelos depende del plan de AviationStack, que puede no permitir búsquedas de aeropuertos y aerolíneas. Si ambos están restringidos, se devuelve un mensaje de error.
+        airport_error = _aviation_tool_error(airports)
+        airline_error = _aviation_tool_error(airlines)
 
-        print("\nAIRPORTS:", airports)
-        print("\nAIRLINES:", airlines)
+        if airport_error and airline_error:
+            flight_data = (
+                "Flight information is unavailable because the current "
+                "AviationStack plan restricts airport and airline lookups."
+            )
+        else:
+            prompt = FLIGHT_AGENT_PROMPT.format(
+                query=_limit_prompt_text(query),
+                airport_data=(
+                    f"Unavailable: {airport_error}"
+                    if airport_error
+                    else str(airports)[:100]
+                ),
+                airline_data=(
+                    f"Unavailable: {airline_error}"
+                    if airline_error
+                    else str(airlines)[:100]
+                )
+            )
 
-        prompt = FLIGHT_AGENT_PROMPT.format(
-            query=query,
-            airport_data=str(airports)[:3000],
-            airline_data=str(airlines)[:3000]
-        )
+            response = llm.invoke([
+                SystemMessage(
+                    content="You are an expert travel flight planner."
+                ),
+                HumanMessage(content=prompt)
+            ], max_tokens=512)
 
-        response = llm.invoke([
-            SystemMessage(
-                content="You are an expert travel flight planner."
-            ),
-            HumanMessage(content=prompt)
-        ])
-
-        flight_data = response.content
+            flight_data = response.content
 
     except Exception as e:
 
@@ -240,16 +283,16 @@ def itinerary_agent(state: TravelState):
 Create a complete travel itinerary.
 
 User Query:
-{state['user_query']}
+{_limit_prompt_text(state['user_query'])}
 
 Flight Results:
-{state['flight_results']}
+{_limit_prompt_text(state['flight_results'])}
 
 Hotel Results:
-{state['hotel_results']}
+{_limit_prompt_text(state['hotel_results'])}
 
 Weather Results:
-{state['weather_results']}
+{_limit_prompt_text(state['weather_results'])}
 
 Make the itinerary practical, budget-aware, and easy to follow.
 """
@@ -257,7 +300,7 @@ Make the itinerary practical, budget-aware, and easy to follow.
     response = llm.invoke([
         SystemMessage(content="You are an expert travel planner."),
         HumanMessage(content=prompt)
-    ])
+    ], max_tokens=1024)
 
     return {
         "itinerary": response.content,
@@ -276,19 +319,19 @@ def final_agent(state: TravelState):
 Generate the final travel response for the user.
 
 User Request:
-{state['user_query']}
+{_limit_prompt_text(state['user_query'])}
 
 Flights:
-{state['flight_results']}
+{_limit_prompt_text(state['flight_results'])}
 
 Hotels:
-{state['hotel_results']}
+{_limit_prompt_text(state['hotel_results'])}
 
 Weather:
-{state['weather_results']}
+{_limit_prompt_text(state['weather_results'])}
 
 Itinerary:
-{state['itinerary']}
+{_limit_prompt_text(state['itinerary'])}
 
 Format the final answer beautifully using these sections:
 
@@ -311,7 +354,7 @@ Important:
     response = llm.invoke([
         SystemMessage(content="You are a professional AI travel booking assistant."),
         HumanMessage(content=final_prompt)
-    ])
+    ], max_tokens=1024)
 
     return {
         "messages": [response],
