@@ -48,7 +48,7 @@ async def home(request: Request):
 
 
 @app.post("/api/travel")
-def travel_planner(request_data: TravelRequest):
+async def travel_planner(request_data: TravelRequest):
     try:
         user_message = request_data.message.strip()
 
@@ -61,7 +61,7 @@ def travel_planner(request_data: TravelRequest):
                 }
             )
 
-        result = run_travel_agent(
+        result = await run_travel_agent(
             user_input=user_message,
             thread_id=request_data.thread_id
         )

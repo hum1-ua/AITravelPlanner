@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+import asyncio
 
 import certifi
 from dotenv import load_dotenv
@@ -141,6 +142,7 @@ async def get_all_tools():
 # ==========================================
 
 search_tool = None
+search_tool_lock = asyncio.Lock()
 
 
 async def initialize_mcp():
@@ -157,30 +159,34 @@ async def initialize_mcp():
     if search_tool is not None:
         return
 
-    tools = await client.get_tools(
-        server_name="tavily"
-    )
+    async with search_tool_lock:
+        if search_tool is not None:
+            return
 
-    tools_by_name = {
-        tool.name: tool
-        for tool in tools
-    }
-
-    search_tool = tools_by_name.get(
-        "tavily_search"
-    )
-
-    if search_tool is None:
-        available_tools = ", ".join(
-            tools_by_name.keys()
+        tools = await client.get_tools(
+            server_name="tavily"
         )
 
-        raise RuntimeError(
-            "Tavily MCP connected, but the "
-            "'tavily_search' tool was not found. "
-            f"Available tools: "
-            f"{available_tools or 'none'}"
+        tools_by_name = {
+            tool.name: tool
+            for tool in tools
+        }
+
+        search_tool = tools_by_name.get(
+            "tavily_search"
         )
+
+        if search_tool is None:
+            available_tools = ", ".join(
+                tools_by_name.keys()
+            )
+
+            raise RuntimeError(
+                "Tavily MCP connected, but the "
+                "'tavily_search' tool was not found. "
+                f"Available tools: "
+                f"{available_tools or 'none'}"
+            )
 
 
 async def tavily_mcp_search(query: str):
@@ -200,6 +206,7 @@ async def tavily_mcp_search(query: str):
 # ==========================================
 
 aviation_tools = {}
+aviation_tools_lock = asyncio.Lock()
 
 
 async def initialize_aviation_tools():
@@ -208,22 +215,26 @@ async def initialize_aviation_tools():
     if aviation_tools:
         return
 
-    # Load only AviationStack.
-    # Tavily and Weather will not be initialized here.
-    tools = await client.get_tools(
-        server_name="aviationstack"
-    )
+    async with aviation_tools_lock:
+        if aviation_tools:
+            return
 
-    aviation_tools = {
-        tool.name: tool
-        for tool in tools
-    }
-
-    if not aviation_tools:
-        raise RuntimeError(
-            "AviationStack MCP connected but "
-            "returned no tools."
+        # Load only AviationStack.
+        # Tavily and Weather will not be initialized here.
+        tools = await client.get_tools(
+            server_name="aviationstack"
         )
+
+        aviation_tools = {
+            tool.name: tool
+            for tool in tools
+        }
+
+        if not aviation_tools:
+            raise RuntimeError(
+                "AviationStack MCP connected but "
+                "returned no tools."
+            )
 
 
 async def aviation_mcp_call(
@@ -259,6 +270,7 @@ async def aviation_mcp_call(
 
 weather_tool = None
 forecast_tool = None
+weather_tools_lock = asyncio.Lock()
 
 
 async def initialize_weather_tools():
@@ -271,54 +283,61 @@ async def initialize_weather_tools():
     ):
         return
 
-    if not WEATHER_SERVER_PATH.exists():
-        raise FileNotFoundError(
-            "Weather MCP server file was not found: "
-            f"{WEATHER_SERVER_PATH}"
+    async with weather_tools_lock:
+        if (
+            weather_tool is not None
+            and forecast_tool is not None
+        ):
+            return
+
+        if not WEATHER_SERVER_PATH.exists():
+            raise FileNotFoundError(
+                "Weather MCP server file was not found: "
+                f"{WEATHER_SERVER_PATH}"
+            )
+
+        # Load only Weather.
+        # Tavily and AviationStack will not be started.
+        tools = await client.get_tools(
+            server_name="weather"
         )
 
-    # Load only Weather.
-    # Tavily and AviationStack will not be started.
-    tools = await client.get_tools(
-        server_name="weather"
-    )
+        tools_by_name = {
+            tool.name: tool
+            for tool in tools
+        }
 
-    tools_by_name = {
-        tool.name: tool
-        for tool in tools
-    }
-
-    weather_tool = tools_by_name.get(
-        "get_current_weather"
-    )
-
-    forecast_tool = tools_by_name.get(
-        "get_forecast"
-    )
-
-    missing_tools = []
-
-    if weather_tool is None:
-        missing_tools.append(
+        weather_tool = tools_by_name.get(
             "get_current_weather"
         )
 
-    if forecast_tool is None:
-        missing_tools.append(
+        forecast_tool = tools_by_name.get(
             "get_forecast"
         )
 
-    if missing_tools:
-        available_tools = ", ".join(
-            tools_by_name.keys()
-        )
+        missing_tools = []
 
-        raise RuntimeError(
-            "Missing Weather MCP tools: "
-            f"{', '.join(missing_tools)}. "
-            f"Available tools: "
-            f"{available_tools or 'none'}"
-        )
+        if weather_tool is None:
+            missing_tools.append(
+                "get_current_weather"
+            )
+
+        if forecast_tool is None:
+            missing_tools.append(
+                "get_forecast"
+            )
+
+        if missing_tools:
+            available_tools = ", ".join(
+                tools_by_name.keys()
+            )
+
+            raise RuntimeError(
+                "Missing Weather MCP tools: "
+                f"{', '.join(missing_tools)}. "
+                f"Available tools: "
+                f"{available_tools or 'none'}"
+            )
 
 
 async def weather_mcp_search(city: str):
@@ -349,7 +368,7 @@ async def forecast_mcp_search(city: str):
 # Destination extractor
 # ==========================================
 
-def extract_destination(query: str):
+async def extract_destination(query: str):
     prompt = f"""
     Extract only the destination city or country.
 
@@ -359,6 +378,6 @@ def extract_destination(query: str):
     Return only destination name.
     """
 
-    response = llm.invoke(prompt)
+    response = await llm.ainvoke(prompt)
 
     return response.content.strip()

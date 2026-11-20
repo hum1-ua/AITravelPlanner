@@ -69,7 +69,7 @@ class TravelState(TypedDict):
     flight_results: str
     hotel_results: str
     itinerary: str
-    llm_calls: int
+    llm_calls: Annotated[int, operator.add]
     weather_results: str
 
 
@@ -116,7 +116,7 @@ def _aviation_tool_error(result) -> str | None:
 #         "messages": [
 #             AIMessage(content="Flight results fetched.")
 #         ],
-#         "llm_calls": state.get("llm_calls", 0) + 1
+#         "llm_calls": 1
 #     }
 
 
@@ -152,22 +152,20 @@ Return concise travel guidance.
 
 
 # Flight Agent
-def flight_agent(state: TravelState):
+async def flight_agent(state: TravelState):
     query = state["user_query"]
 
     try:
-
-        airports = asyncio.run(
-            aviation_mcp_call(
-                "list_airports"
-            )
+        airports, airlines = await asyncio.gather(
+            aviation_mcp_call("list_airports"),
+            aviation_mcp_call("list_airlines"),
+            return_exceptions=True
         )
 
-        airlines = asyncio.run(
-            aviation_mcp_call(
-                "list_airlines"
-            )
-        )
+        if isinstance(airports, Exception):
+            airports = [{"text": json.dumps({"ok": False, "error": str(airports)})}]
+        if isinstance(airlines, Exception):
+            airlines = [{"text": json.dumps({"ok": False, "error": str(airlines)})}]
 
         #La información de vuelos depende del plan de AviationStack, que puede no permitir búsquedas de aeropuertos y aerolíneas. Si ambos están restringidos, se devuelve un mensaje de error.
         airport_error = _aviation_tool_error(airports)
@@ -193,7 +191,7 @@ def flight_agent(state: TravelState):
                 )
             )
 
-            response = llm.invoke([
+            response = await llm.ainvoke([
                 SystemMessage(
                     content="You are an expert travel flight planner."
                 ),
@@ -213,7 +211,7 @@ def flight_agent(state: TravelState):
                 content="Flight recommendations generated"
             )
         ],
-        "llm_calls": state.get("llm_calls", 0) + 1
+        "llm_calls": 1
     }
 
 
@@ -224,17 +222,19 @@ def flight_agent(state: TravelState):
 # Hotel Agent
 # =========================
 
-def hotel_agent(state: TravelState):
+async def hotel_agent(state: TravelState):
     query = f"Best hotels for {state['user_query']}"
-    # hotel_results = tavily_search(query)
-    hotel_results = asyncio.run(tavily_mcp_search(query))
+    try:
+        hotel_results = await tavily_mcp_search(query)
+    except Exception as e:
+        hotel_results = f"Hotel information unavailable: {str(e)}"
 
     return {
         "hotel_results": hotel_results,
         "messages": [
             AIMessage(content="Hotel information fetched.")
         ],
-        "llm_calls": state.get("llm_calls", 0) + 1
+        "llm_calls": 1
     }
 
 
@@ -244,17 +244,22 @@ def hotel_agent(state: TravelState):
 # Weather Agent
 # =========================
 
-def weather_agent(state: TravelState):
+async def weather_agent(state: TravelState):
+    city = await extract_destination(state["user_query"])
 
-    city = extract_destination(state["user_query"])
-
-    weather_data = asyncio.run(
-        weather_mcp_search(city)
-    )
-
-    forecast_data = asyncio.run(
-        forecast_mcp_search(city)
-    )
+    try:
+        weather_data, forecast_data = await asyncio.gather(
+            weather_mcp_search(city),
+            forecast_mcp_search(city),
+            return_exceptions=True
+        )
+        if isinstance(weather_data, Exception):
+            weather_data = f"Unavailable: {weather_data}"
+        if isinstance(forecast_data, Exception):
+            forecast_data = f"Unavailable: {forecast_data}"
+    except Exception as e:
+        weather_data = f"Unavailable: {e}"
+        forecast_data = f"Unavailable: {e}"
 
     return {
         "weather_results": f"""
@@ -273,12 +278,11 @@ def weather_agent(state: TravelState):
 
 
 
-
 # =========================
 # Itinerary Agent
 # =========================
 
-def itinerary_agent(state: TravelState):
+async def itinerary_agent(state: TravelState):
     prompt = f"""
 Create a complete travel itinerary.
 
@@ -297,7 +301,7 @@ Weather Results:
 Make the itinerary practical, budget-aware, and easy to follow.
 """
 
-    response = llm.invoke([
+    response = await llm.ainvoke([
         SystemMessage(content="You are an expert travel planner."),
         HumanMessage(content=prompt)
     ], max_tokens=1024)
@@ -305,7 +309,7 @@ Make the itinerary practical, budget-aware, and easy to follow.
     return {
         "itinerary": response.content,
         "messages": [response],
-        "llm_calls": state.get("llm_calls", 0) + 1
+        "llm_calls": 1
     }
 
 
@@ -314,7 +318,7 @@ Make the itinerary practical, budget-aware, and easy to follow.
 # Final Response Agent
 # =========================
 
-def final_agent(state: TravelState):
+async def final_agent(state: TravelState):
     final_prompt = f"""
 Generate the final travel response for the user.
 
@@ -351,14 +355,14 @@ Important:
 - Keep the response useful for real travel planning.
 """
 
-    response = llm.invoke([
+    response = await llm.ainvoke([
         SystemMessage(content="You are a professional AI travel booking assistant."),
         HumanMessage(content=final_prompt)
     ], max_tokens=1024)
 
     return {
         "messages": [response],
-        "llm_calls": state.get("llm_calls", 0) + 1
+        "llm_calls": 1
     }
 
 
@@ -375,8 +379,10 @@ graph.add_node("itinerary_agent", itinerary_agent)
 graph.add_node("final_agent", final_agent)
 
 graph.add_edge(START, "flight_agent")
-graph.add_edge("flight_agent", "hotel_agent")
-graph.add_edge("hotel_agent", "weather_agent")
+graph.add_edge(START, "hotel_agent")
+graph.add_edge(START, "weather_agent")
+graph.add_edge("flight_agent", "itinerary_agent")
+graph.add_edge("hotel_agent", "itinerary_agent")
 graph.add_edge("weather_agent", "itinerary_agent")
 graph.add_edge("itinerary_agent", "final_agent")
 graph.add_edge("final_agent", END)
@@ -387,14 +393,18 @@ graph.add_edge("final_agent", END)
 # =========================
 DATABASE_URL = get_database_url()
 
-_conn = psycopg.connect(
-    DATABASE_URL,
-    autocommit=True,
-    row_factory=dict_row
-)
-
-checkpointer = PostgresSaver(_conn)
-checkpointer.setup()
+try:
+    _conn = psycopg.connect(
+        DATABASE_URL,
+        autocommit=True,
+        row_factory=dict_row,
+        connect_timeout=5
+    )
+    checkpointer = PostgresSaver(_conn)
+    checkpointer.setup()
+except Exception as e:
+    print(f"WARNING: PostgreSQL checkpointer unavailable: {e}")
+    checkpointer = None
 
 travel_graph = graph.compile(checkpointer=checkpointer)
 
@@ -404,7 +414,7 @@ travel_graph = graph.compile(checkpointer=checkpointer)
 # Function for FastAPI
 # =========================
 
-def run_travel_agent(user_input: str, thread_id: str | None = None):
+async def run_travel_agent(user_input: str, thread_id: str | None = None):
     if not thread_id:
         thread_id = f"user_{uuid.uuid4().hex}"
 
@@ -414,7 +424,7 @@ def run_travel_agent(user_input: str, thread_id: str | None = None):
         }
     }
 
-    result = travel_graph.invoke(
+    result = await travel_graph.ainvoke(
         {
             "messages": [
                 HumanMessage(content=user_input)
